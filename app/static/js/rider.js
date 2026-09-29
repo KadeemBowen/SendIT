@@ -2,7 +2,7 @@
 import { api } from './api.js';
 import { drawOrder, makeMap, riderIcon } from './map.js';
 import {
-  esc, fmtDate, fmtKm, fmtMin, haversineKm, money, navUrl, statusPill, telLink, timeline, toast,
+  esc, fmtDate, fmtKm, fmtMin, haversineKm, money, navUrl, paymentPill, statusPill, telLink, timeline, toast,
 } from './ui.js';
 
 const SEND_EVERY_MS = 3000;
@@ -24,6 +24,10 @@ export function renderRider(root, user, sock, cfg) {
             <strong id="online-label"></strong>
             <div class="muted small" id="gps-status"></div>
           </div>
+        </div>
+        <div id="approval" class="card notice" hidden>
+          <strong>Your account is waiting for approval</strong>
+          <p class="small">We'll review your details and switch you on. You can go online as soon as you're approved.</p>
         </div>
         <label class="sim-toggle small"><input type="checkbox" id="sim"> Simulate GPS movement (for testing on a computer)</label>
         <div id="job"></div>
@@ -162,8 +166,11 @@ export function renderRider(root, user, sock, cfg) {
 
   function renderStatus() {
     $('#online-label').textContent = s.online ? 'Online' : 'Offline';
+    $('#online').disabled = !user.approved;
+    $('#approval').hidden = user.approved;
     let status;
-    if (!sharing()) status = 'Go online to receive delivery requests';
+    if (!user.approved) status = 'Pending approval';
+    else if (!sharing()) status = 'Go online to receive delivery requests';
     else if (s.lastGpsError && !s.simTimer) status = s.lastGpsError;
     else if (!s.me) status = 'Waiting for your location…';
     else status = s.simTimer ? 'Sharing simulated location' : 'Sharing your live location';
@@ -191,6 +198,7 @@ export function renderRider(root, user, sock, cfg) {
             <strong class="price">${money(o.price, o.currency)}</strong>
             <span class="muted small">${fmtKm(o.distance_km)} trip${away != null ? ` · pickup ${fmtKm(away)} away` : ''}</span>
           </div>
+          <div>${paymentPill(o)}</div>
           <ul class="route-summary">
             <li><span class="place-dot pin-pickup">P</span>${esc(o.pickup_address)}</li>
             ${o.stops.length ? `<li class="muted small">+ ${o.stops.length} stop${o.stops.length > 1 ? 's' : ''}</li>` : ''}
@@ -287,11 +295,23 @@ export function renderRider(root, user, sock, cfg) {
           </div>` : ''}
         ${o.notes ? `<div class="job-section"><div class="muted small">Notes</div><div>${esc(o.notes)}</div></div>` : ''}
 
-        <div class="quote-total"><span>Collect (cash)</span><strong>${money(o.price, o.currency)}</strong></div>
+        ${collectBlock(o)}
         <button type="button" class="btn btn-primary btn-block" data-act="advance">
           ${o.status === 'accepted' ? 'I\'ve picked up' : 'Mark as delivered'}
         </button>
       </article>`;
+  }
+
+  function collectBlock(o) {
+    if (o.payment_status === 'paid') {
+      return `<div class="quote-total"><span>Paid with ${o.payment_method === 'mmg' ? 'MMG' : 'cash'}</span><strong>Don't collect</strong></div>`;
+    }
+    if (o.payment_method === 'mmg') {
+      return `
+        <div class="quote-total"><span>MMG not paid yet</span><strong>${money(o.price, o.currency)}</strong></div>
+        <p class="small muted">If it's still unpaid at drop-off, collect this amount in cash.</p>`;
+    }
+    return `<div class="quote-total"><span>Collect (cash)</span><strong>${money(o.price, o.currency)}</strong></div>`;
   }
 
   $('#job').addEventListener('change', e => {
@@ -357,6 +377,15 @@ export function renderRider(root, user, sock, cfg) {
 
   sock.on(msg => {
     if (msg.type === 'open') { refresh(); return; }
+    if (msg.type === 'account') {
+      const wasApproved = user.approved;
+      Object.assign(user, msg.user);
+      s.online = user.is_online;
+      $('#online').checked = s.online;
+      if (user.approved && !wasApproved) toast('You\'re approved! Go online to start receiving jobs', 'success');
+      if (!user.approved && wasApproved) { toast('Your rider approval was withdrawn', 'error'); s.requests = []; renderRequests(); }
+      updateTracking();
+    }
     if (msg.type === 'order_new' && s.online) {
       if (!s.requests.some(r => r.id === msg.order.id)) s.requests.unshift(msg.order);
       if (!s.job) toast(`New request · ${money(msg.order.price, msg.order.currency)}`, 'success');
@@ -375,8 +404,10 @@ export function renderRider(root, user, sock, cfg) {
         if (s.online) loadRequests().then(renderRequests).catch(() => {});
       } else if (msg.order.status !== 'delivered') {
         const statusChanged = msg.order.status !== s.job.status;
+        const paymentChanged = msg.order.payment_status !== s.job.payment_status;
         s.job = msg.order;
         if (statusChanged) setJob(msg.order);
+        else if (paymentChanged) renderJob();
         else renderJobEta();
       }
     }

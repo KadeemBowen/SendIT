@@ -2,6 +2,7 @@ import { api, auth, openSocket } from './api.js';
 import { esc, toast } from './ui.js';
 import { renderCustomer } from './customer.js';
 import { renderRider } from './rider.js';
+import { renderAdmin } from './admin.js';
 
 const app = document.getElementById('app');
 const whoami = document.getElementById('whoami');
@@ -25,7 +26,7 @@ function start(user) {
   const sock = openSocket();
   whoami.innerHTML = `
     <span class="who-name">${esc(user.name)}</span>
-    <span class="role-badge">${user.role === 'rider' ? 'Rider' : 'Customer'}</span>
+    <span class="role-badge">${{ rider: 'Rider', admin: 'Admin' }[user.role] || 'Customer'}</span>
     <button class="link-btn" id="logout">Log out</button>`;
   document.getElementById('logout').onclick = async () => {
     try { await api('/api/auth/logout', { method: 'POST' }); } catch { /* already logged out */ }
@@ -33,7 +34,8 @@ function start(user) {
     auth.clear();
     location.reload();
   };
-  if (user.role === 'rider') renderRider(app, user, sock, cfg);
+  if (user.role === 'admin') renderAdmin(app, user, sock, cfg);
+  else if (user.role === 'rider') renderRider(app, user, sock, cfg);
   else renderCustomer(app, user, sock, cfg);
 }
 
@@ -68,7 +70,7 @@ function renderAuth(mode) {
           <p class="error" id="auth-error" hidden></p>
           <button class="btn btn-primary btn-block">${register ? 'Create account' : 'Log in'}</button>
         </form>
-        ${cfg.demo ? `<p class="muted small demo-hint">Demo: <b>customer@demo.gy</b> or <b>rider@demo.gy</b>, password <b>demo123</b></p>` : ''}
+        ${cfg.demo ? `<p class="muted small demo-hint">Demo: <b>customer@demo.gy</b>, <b>rider@demo.gy</b> or <b>admin@demo.gy</b>, password <b>demo123</b></p>` : ''}
       </div>
     </div>`;
 

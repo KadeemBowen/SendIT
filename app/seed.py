@@ -8,6 +8,7 @@ DEMO_USERS = [
     ("Demo Customer", "customer@demo.gy", "592-600-0001", "customer", None, None),
     ("Demo Rider", "rider@demo.gy", "592-600-0002", "rider", "Red Honda motorbike", "CJ 1234"),
     ("Second Rider", "rider2@demo.gy", "592-600-0003", "rider", "Blue Yamaha scooter", "CK 5678"),
+    ("Demo Admin", "admin@demo.gy", "592-600-0000", "admin", None, None),
 ]
 
 

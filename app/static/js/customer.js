@@ -2,7 +2,7 @@
 import { api } from './api.js';
 import { drawOrder, fit, makeMap, pin } from './map.js';
 import {
-  ACTIVE_STATUSES, debounce, esc, fmtDate, fmtKm, fmtMin, money, statusPill, telLink, timeline, toast,
+  ACTIVE_STATUSES, debounce, esc, fmtDate, fmtKm, fmtMin, money, paymentPill, statusPill, telLink, timeline, toast,
 } from './ui.js';
 
 const PRESET_TASKS = ['Collect a package', 'Buy items for me', 'Pay a bill', 'Drop off documents', 'Wait and bring back'];
@@ -46,9 +46,15 @@ export function renderCustomer(root, user, sock, cfg) {
           </div>
           <textarea id="notes" rows="2" maxlength="500" placeholder="Notes for the rider (landmarks, gate code…)"></textarea>
 
+          <h3>Payment</h3>
+          <div class="choice">
+            <label><input type="radio" name="pay" value="cash" checked><span><b>Cash</b><small>Pay the rider on delivery</small></span></label>
+            <label><input type="radio" name="pay" value="mmg"><span><b>MMG</b><small>Mobile Money Guyana</small></span></label>
+          </div>
+          <input id="mmg-number" placeholder="MMG number that will pay" inputmode="tel" maxlength="30" value="${esc(user.phone)}" hidden>
+
           <div id="quote" class="quote" hidden></div>
           <button class="btn btn-primary btn-block" id="book-btn" disabled>Set pickup and drop-off</button>
-          <p class="muted small center">Pay the rider in cash on delivery.</p>
         </form>
         <details class="card" id="history">
           <summary>Past deliveries</summary>
@@ -319,6 +325,11 @@ export function renderCustomer(root, user, sock, cfg) {
     btn.textContent = `Book delivery · ${money(q.price, q.currency)}`;
   }
 
+  const payMethod = () => form.querySelector('input[name=pay]:checked').value;
+  form.querySelectorAll('input[name=pay]').forEach(r => {
+    r.onchange = () => { $('#mmg-number').hidden = payMethod() !== 'mmg'; };
+  });
+
   form.addEventListener('submit', async e => {
     e.preventDefault();
     const trip = tripPayload();
@@ -334,6 +345,8 @@ export function renderCustomer(root, user, sock, cfg) {
           recipient_name: $('#rcp-name').value,
           recipient_phone: $('#rcp-phone').value,
           notes: $('#notes').value,
+          payment_method: payMethod(),
+          mmg_number: $('#mmg-number').value,
         },
       });
       resetForm();
@@ -342,7 +355,9 @@ export function renderCustomer(root, user, sock, cfg) {
       showForm(false);
       renderActive();
       drawTracked(true);
-      toast('Delivery requested - finding you a rider', 'success');
+      toast(order.payment_status === 'pending'
+        ? 'Delivery requested - approve the MMG payment on your phone'
+        : 'Delivery requested - finding you a rider', 'success');
     } catch (err) {
       toast(err.message, 'error');
       renderQuote();
@@ -354,7 +369,7 @@ export function renderCustomer(root, user, sock, cfg) {
     s.stops = [];
     s.tasks = [];
     s.quote = null;
-    form.querySelectorAll('input, textarea').forEach(i => { i.value = ''; });
+    form.querySelectorAll('input:not([type=radio]):not(#mmg-number), textarea').forEach(i => { i.value = ''; });
     renderStops();
     renderTasks();
     renderQuote();
@@ -416,6 +431,7 @@ export function renderCustomer(root, user, sock, cfg) {
           <li><span class="place-dot pin-dropoff">D</span>${esc(o.dropoff_address)}</li>
         </ul>
         ${o.tasks.length ? `<ul class="task-summary">${o.tasks.map(t => `<li>${esc(t)}</li>`).join('')}</ul>` : ''}
+        ${paymentBlock(o)}
         ${cancellable ? (s.confirmCancel === o.id ? `
           <div class="confirm">
             <span>Cancel this delivery?</span>
@@ -425,8 +441,51 @@ export function renderCustomer(root, user, sock, cfg) {
       </article>`;
   }
 
+  function paymentBlock(o) {
+    const mmg = o.payment_method === 'mmg';
+    const text = {
+      unpaid: mmg ? 'Not paid yet' : 'Pay the rider in cash on delivery',
+      pending: o.payment?.message || 'Approve the payment request in MMG',
+      paid: mmg ? 'Paid with MMG' : 'Paid',
+      failed: o.payment?.message || 'The MMG payment didn\'t go through',
+      refund_due: 'Refund on the way',
+      refunded: 'Refunded',
+      void: 'No charge',
+    }[o.payment_status];
+    let actions = '';
+    if (o.payment_status === 'pending' && cfg.mmg_mode === 'mock' && o.payment) {
+      actions = `
+        <div class="test-mode small">
+          <span>Test mode: pretend you</span>
+          <button type="button" class="btn btn-secondary btn-sm" data-act="sim-paid" data-payment="${o.payment.id}">approved</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-act="sim-failed" data-payment="${o.payment.id}">declined</button>
+        </div>`;
+    } else if (o.payment_status === 'failed') {
+      actions = `
+        <div class="row">
+          <input class="mmg-retry" data-id="${o.id}" value="${esc(o.mmg_number || user.phone)}" inputmode="tel" aria-label="MMG number">
+          <button type="button" class="btn btn-primary btn-sm" data-act="pay-retry">Try again</button>
+        </div>
+        <button type="button" class="link-btn" data-act="pay-cash">Pay cash on delivery instead</button>`;
+    }
+    return `
+      <div class="pay-box">
+        <div class="card-head"><span class="small"><b>Payment</b></span>${paymentPill(o)}</div>
+        <div class="small muted">${esc(text)}</div>
+        ${actions}
+      </div>`;
+  }
+
   function renderActive() {
+    // Live location updates re-render often; keep anything typed into retry fields.
+    const typed = {};
+    activeEl.querySelectorAll('.mmg-retry').forEach(i => { typed[i.dataset.id] = i.value; });
+    const focusedId = document.activeElement?.classList.contains('mmg-retry') ? document.activeElement.dataset.id : null;
     activeEl.innerHTML = s.active.map(orderCard).join('');
+    activeEl.querySelectorAll('.mmg-retry').forEach(i => {
+      if (typed[i.dataset.id] != null) i.value = typed[i.dataset.id];
+      if (i.dataset.id === focusedId) i.focus();
+    });
     $('#new-btn').hidden = !form.hidden || !s.active.length;
   }
 
@@ -442,7 +501,22 @@ export function renderCustomer(root, user, sock, cfg) {
       try { onOrder(await api(`/api/orders/${id}/cancel`, { method: 'POST' })); } catch (err) { toast(err.message, 'error'); renderActive(); }
       return;
     }
-    if (e.target.closest('a')) return;
+    if (act === 'sim-paid' || act === 'sim-failed') {
+      const paymentId = e.target.closest('[data-payment]').dataset.payment;
+      try {
+        onOrder(await api(`/api/payments/${paymentId}/simulate`, { method: 'POST', body: { outcome: act === 'sim-paid' ? 'paid' : 'failed' } }));
+      } catch (err) { toast(err.message, 'error'); }
+      return;
+    }
+    if (act === 'pay-retry' || act === 'pay-cash') {
+      const body = act === 'pay-cash' ? { method: 'cash' } : { method: 'mmg', mmg_number: card.querySelector('.mmg-retry').value };
+      try {
+        onOrder(await api(`/api/orders/${id}/payment`, { method: 'POST', body }));
+        toast(act === 'pay-cash' ? 'OK - pay the rider in cash' : 'Payment request sent - approve it in MMG', 'success');
+      } catch (err) { toast(err.message, 'error'); }
+      return;
+    }
+    if (e.target.closest('a, input, button')) return;
     if (s.trackedId !== id) {
       s.trackedId = id;
       if (!form.hidden) showForm(false);
@@ -473,6 +547,10 @@ export function renderCustomer(root, user, sock, cfg) {
       s.history = [o, ...s.history.filter(h => h.id !== o.id)];
       renderHistory();
     }
+    if (prev && prev.payment_status !== o.payment_status) {
+      if (o.payment_status === 'paid' && o.payment_method === 'mmg') toast('MMG payment received - thank you', 'success');
+      if (o.payment_status === 'failed') toast('MMG payment failed - try again or pay cash', 'error');
+    }
     if (prev && prev.status !== o.status) {
       const messages = {
         accepted: `${o.rider?.name || 'A rider'} accepted your delivery`,
@@ -497,6 +575,7 @@ export function renderCustomer(root, user, sock, cfg) {
           <div class="card-head">${statusPill(o.status)}<span class="small">${money(o.price, o.currency)}</span></div>
           <div class="small">${esc(o.pickup_address)} → ${esc(o.dropoff_address)}</div>
           <div class="muted small">${fmtDate(o.created_at)}${o.rider ? ` · ${esc(o.rider.name)}` : ''}</div>
+          <div>${paymentPill(o)}</div>
         </div>`).join('')
       : '<p class="muted small">No past deliveries yet.</p>';
   }

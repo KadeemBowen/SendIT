@@ -6,7 +6,9 @@ export function makeMap(el, center) {
     attribution: '&copy; OpenStreetMap contributors',
   }).addTo(map);
   // The map container can change size as panels open/close.
-  new ResizeObserver(() => map.invalidateSize()).observe(el);
+  const resize = new ResizeObserver(() => map.invalidateSize());
+  resize.observe(el);
+  map.on('unload', () => resize.disconnect());
   return map;
 }
 

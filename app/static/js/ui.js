@@ -49,6 +49,31 @@ export const STATUS_LABELS = {
 
 export const ACTIVE_STATUSES = ['requested', 'accepted', 'picked_up'];
 
+export const PAYMENT_LABELS = {
+  unpaid: 'Unpaid',
+  pending: 'Awaiting MMG',
+  paid: 'Paid',
+  failed: 'Failed',
+  refund_due: 'Refund due',
+  refunded: 'Refunded',
+  void: 'No charge',
+};
+
+export function paymentPill(o) {
+  const method = o.payment_method === 'mmg' ? 'MMG' : 'Cash';
+  const label = o.payment_method === 'cash' && o.payment_status === 'unpaid' ? 'on delivery' : PAYMENT_LABELS[o.payment_status];
+  return `<span class="status pay-${o.payment_status}">${method} · ${label}</span>`;
+}
+
+export function timeAgo(iso) {
+  if (!iso) return '';
+  const min = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min} min ago`;
+  if (min < 1440) return `${Math.floor(min / 60)} h ago`;
+  return fmtDate(iso);
+}
+
 const STEPS = [['requested', 'Requested'], ['accepted', 'Rider assigned'], ['picked_up', 'Picked up'], ['delivered', 'Delivered']];
 
 export function timeline(status) {

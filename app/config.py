@@ -6,10 +6,12 @@ APP_NAME = os.environ.get("COURIER_APP_NAME", "SendIT")
 DB_PATH = Path(os.environ.get("COURIER_DB", Path(__file__).resolve().parent.parent / "data" / "courier.db"))
 
 CURRENCY = "GYD"
+UTC_OFFSET_HOURS = -4             # Guyana time, used for "today" on the admin dashboard
 MAP_CENTER = (6.8013, -58.1551)  # Georgetown
 GEOCODE_COUNTRY = "gy"            # limit address search to Guyana ("" = worldwide)
 
 # Pricing: base + distance + extra stops + tasks, rounded up, never below the minimum.
+# These are the defaults; admins can change them live on the dashboard (stored in the database).
 PRICING = {
     "base_fee": 500,
     "per_km": 150,
@@ -29,6 +31,15 @@ STOP_MIN = 5              # extra time per intermediate stop
 # Free public routing (OSRM) for road distance + route line. Falls back to estimates if it fails.
 USE_OSRM = os.environ.get("COURIER_USE_OSRM", "1") == "1"
 HTTP_USER_AGENT = os.environ.get("COURIER_USER_AGENT", f"{APP_NAME}-prototype/0.1")
+
+# MMG (Mobile Money Guyana) payments.
+#   "mock": simulated payments for testing - customers/admins get a button to approve or fail them.
+#   "live": the real MMG API (fill in app/payments.py:LiveMMG once you have MMG's merchant API docs).
+MMG_MODE = os.environ.get("COURIER_MMG_MODE", "mock")
+MMG_API_BASE = os.environ.get("MMG_API_BASE", "")
+MMG_MERCHANT_ID = os.environ.get("MMG_MERCHANT_ID", "")
+MMG_API_KEY = os.environ.get("MMG_API_KEY", "")
+MMG_CALLBACK_SECRET = os.environ.get("MMG_CALLBACK_SECRET", "")
 
 # Shows demo login hints on the sign-in screen.
 DEMO_MODE = os.environ.get("COURIER_DEMO", "1") == "1"

@@ -23,6 +23,14 @@ class Hub:
             except Exception:
                 self.remove(user_id, ws)
 
+    async def disconnect(self, user_id):
+        for ws in list(self._conns.get(user_id, ())):
+            try:
+                await ws.close(code=4403)
+            except Exception:
+                pass
+            self.remove(user_id, ws)
+
     async def send_many(self, user_ids, message):
         for user_id in set(user_ids):
             await self.send(user_id, message)

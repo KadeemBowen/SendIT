@@ -70,7 +70,7 @@ def _now():
 
 
 def _new_payment(order, provider_name, status, message=None):
-    payment_id, _ = db.execute(
+    payment_id = db.insert(
         """INSERT INTO payments (order_id, provider, amount, currency, status, message, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (order["id"], provider_name, order["price"], order["currency"], status, message, _now(), _now()),
@@ -116,10 +116,6 @@ def apply_result(payment_id, status, raw=None, message=None):
 
 def payment_by_ref(provider_name, ref):
     return db.query_one("SELECT * FROM payments WHERE provider = ? AND provider_ref = ?", (provider_name, ref))
-
-
-def latest_payment(order_id):
-    return db.query_one("SELECT * FROM payments WHERE order_id = ? ORDER BY id DESC LIMIT 1", (order_id,))
 
 
 def record_cash(order):

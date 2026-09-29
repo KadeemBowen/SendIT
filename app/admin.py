@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from . import config, db, payments, pricing
 from .deps import admin_user, now, public_user
 from .hub import hub
-from .orders import ACTIVE_STATUSES, get_order, order_view, push_order, rider_active_job, withdraw
+from .orders import ACTIVE_STATUSES, fetch_orders, get_order, order_view, push_order, rider_active_job, withdraw
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(admin_user)])
 
@@ -77,10 +77,7 @@ def overview():
            FROM users u LEFT JOIN rider_locations l ON l.rider_id = u.id
            WHERE u.role = 'rider' AND u.is_online = 1 AND u.active = 1 ORDER BY u.name"""
     )
-    active = db.query(
-        f"SELECT * FROM orders WHERE status IN ({','.join('?' * len(ACTIVE_STATUSES))}) ORDER BY id DESC",
-        ACTIVE_STATUSES,
-    )
+    active = fetch_orders(f"o.status IN ({','.join('?' * len(ACTIVE_STATUSES))})", ACTIVE_STATUSES)
     return {"stats": stats, "riders": riders, "active_orders": [order_view(o) for o in active], "currency": config.CURRENCY}
 
 
@@ -106,19 +103,21 @@ def list_orders(status: str = "all", q: str = "", limit: int = 50, offset: int =
             where += " AND o.id = ?"
             args.append(int(q.lstrip("#")))
         else:
-            like = f"%{q}%"
-            where += """ AND (o.pickup_address LIKE ? OR o.dropoff_address LIKE ? OR c.name LIKE ?
-                          OR c.phone LIKE ? OR r.name LIKE ?)"""
+            like = f"%{q.lower()}%"
+            where += """ AND (LOWER(o.pickup_address) LIKE ? OR LOWER(o.dropoff_address) LIKE ? OR LOWER(c.name) LIKE ?
+                          OR c.phone LIKE ? OR LOWER(r.name) LIKE ?)"""
             args += [like] * 5
-    base = f"FROM orders o JOIN users c ON c.id = o.customer_id LEFT JOIN users r ON r.id = o.rider_id WHERE {where}"
-    total = count(f"SELECT COUNT(*) n {base}", args)
-    rows = db.query(f"SELECT o.* {base} ORDER BY o.id DESC LIMIT ? OFFSET ?", [*args, min(limit, 200), max(offset, 0)])
+    total = count(
+        f"SELECT COUNT(*) n FROM orders o JOIN users c ON c.id = o.customer_id LEFT JOIN users r ON r.id = o.rider_id WHERE {where}",
+        args,
+    )
+    rows = fetch_orders(where, [*args, min(limit, 200), max(offset, 0)], "ORDER BY o.id DESC LIMIT ? OFFSET ?")
     return {"total": total, "orders": [order_view(r) for r in rows]}
 
 
 @router.post("/orders/{order_id}/cancel")
 async def cancel(order_id: int, body: CancelIn):
-    _, changed = db.execute(
+    changed = db.execute(
         """UPDATE orders SET status = 'cancelled', cancelled_at = ?, cancelled_by = ?
            WHERE id = ? AND status IN ('requested', 'accepted', 'picked_up')""",
         (now(), f"admin: {body.reason.strip()}" if body.reason and body.reason.strip() else "admin", order_id),
@@ -137,7 +136,7 @@ async def assign(order_id: int, body: AssignIn):
         raise HTTPException(422, "Pick an approved, active rider")
     if rider_active_job(rider["id"]):
         raise HTTPException(409, f"{rider['name']} is already on a job")
-    _, changed = db.execute(
+    changed = db.execute(
         "UPDATE orders SET rider_id = ?, status = 'accepted', accepted_at = ? WHERE id = ? AND status = 'requested'",
         (rider["id"], now(), order_id),
     )
@@ -181,7 +180,7 @@ def available_riders():
 
 @router.get("/users")
 def list_users(role: Literal["rider", "customer"], q: str = ""):
-    like = f"%{q.strip()}%"
+    like = f"%{q.strip().lower()}%"
     if role == "rider":
         sql = """SELECT u.*, l.updated_at AS last_seen,
                         (SELECT COUNT(*) FROM orders o WHERE o.rider_id = u.id AND o.status = 'delivered') AS jobs,
@@ -193,7 +192,8 @@ def list_users(role: Literal["rider", "customer"], q: str = ""):
                         (SELECT COALESCE(SUM(price), 0) FROM orders o WHERE o.customer_id = u.id AND o.status = 'delivered') AS earned
                  FROM users u"""
     rows = db.query(
-        sql + """ WHERE u.role = ? AND (u.name LIKE ? OR u.email LIKE ? OR u.phone LIKE ? OR COALESCE(u.plate, '') LIKE ?)
+        sql + """ WHERE u.role = ? AND (LOWER(u.name) LIKE ? OR u.email LIKE ? OR u.phone LIKE ?
+                                         OR LOWER(COALESCE(u.plate, '')) LIKE ?)
                  ORDER BY u.approved ASC, u.id DESC LIMIT 200""",
         (role, like, like, like, like),
     )
@@ -209,15 +209,18 @@ async def update_user(user_id: int, body: UserUpdateIn):
     if body.approved is not None:
         if user["role"] != "rider":
             raise HTTPException(422, "Only riders need approval")
-        db.execute("UPDATE users SET approved = ?, is_online = is_online AND ? WHERE id = ?",
-                   (int(body.approved), int(body.approved), user_id))
+        db.execute("UPDATE users SET approved = ? WHERE id = ?", (int(body.approved), user_id))
+        if not body.approved:
+            db.execute("UPDATE users SET is_online = 0 WHERE id = ?", (user_id,))
     if body.active is not None:
         if not body.active and user["role"] == "rider" and rider_active_job(user_id):
             raise HTTPException(409, "This rider is on a job - reassign or finish it first")
-        db.execute("UPDATE users SET active = ?, is_online = is_online AND ? WHERE id = ?",
-                   (int(body.active), int(body.active), user_id))
+        db.execute("UPDATE users SET active = ? WHERE id = ?", (int(body.active), user_id))
         if not body.active:
-            db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            db.execute_all([
+                ("UPDATE users SET is_online = 0 WHERE id = ?", (user_id,)),
+                ("DELETE FROM sessions WHERE user_id = ?", (user_id,)),
+            ])
             await hub.disconnect(user_id)
     user = db.query_one("SELECT * FROM users WHERE id = ?", (user_id,))
     if body.approved is not None:

@@ -13,7 +13,7 @@ from . import admin, config, db, geo, payments, pricing
 from .auth import hash_password, new_token, verify_password
 from .deps import bearer_token, current_user, customer_user, now, public_user, rider_user
 from .hub import hub
-from .orders import announce_new, get_order, order_view, push_order, rider_active_job, withdraw
+from .orders import announce_new, fetch_orders, get_order, order_view, push_order, rider_active_job, withdraw
 
 STATIC = Path(__file__).parent / "static"
 
@@ -21,6 +21,9 @@ STATIC = Path(__file__).parent / "static"
 @asynccontextmanager
 async def lifespan(_app):
     db.init()
+    if config.SEED_DEMO_IF_EMPTY and not db.query_one("SELECT id FROM users LIMIT 1"):
+        from .seed import load_demo
+        await run_in_threadpool(load_demo)
     yield
 
 
@@ -171,7 +174,7 @@ def register(body: RegisterIn):
         raise HTTPException(409, "An account with this email already exists")
     if body.role == "rider" and not (body.vehicle and body.vehicle.strip()):
         raise HTTPException(422, "Riders must describe their vehicle")
-    user_id, _ = db.execute(
+    user_id = db.insert(
         """INSERT INTO users (name, email, phone, role, password_hash, vehicle, plate, approved, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (body.name.strip(), email, body.phone.strip(), body.role, hash_password(body.password),
@@ -232,7 +235,7 @@ async def get_quote(body: TripIn, user=Depends(current_user)):
 async def create_order(body: OrderIn, user=Depends(customer_user)):
     mmg_number = clean_mmg_number(body.mmg_number) if body.payment_method == "mmg" else None
     q = await price_trip(body)
-    order_id, _ = db.execute(
+    order_id = db.insert(
         """INSERT INTO orders (customer_id, status, pickup_address, pickup_lat, pickup_lng,
                dropoff_address, dropoff_lat, dropoff_lng, stops_json, tasks_json,
                recipient_name, recipient_phone, notes, distance_km, duration_min,
@@ -256,13 +259,13 @@ async def create_order(body: OrderIn, user=Depends(customer_user)):
 @app.get("/api/orders")
 def my_orders(user=Depends(current_user)):
     column = "rider_id" if user["role"] == "rider" else "customer_id"
-    rows = db.query(f"SELECT * FROM orders WHERE {column} = ? ORDER BY id DESC LIMIT 50", (user["id"],))
+    rows = fetch_orders(f"o.{column} = ?", (user["id"],), "ORDER BY o.id DESC LIMIT 50")
     return [order_view(r) for r in rows]
 
 
 @app.get("/api/orders/open")
 def open_orders(user=Depends(rider_user)):
-    rows = db.query("SELECT * FROM orders WHERE status = 'requested' ORDER BY id DESC LIMIT 30")
+    rows = fetch_orders("o.status = 'requested'", (), "ORDER BY o.id DESC LIMIT 30")
     return [order_view(r, hide_customer_contact=True) for r in rows]
 
 
@@ -281,7 +284,7 @@ async def accept_order(order_id: int, user=Depends(rider_user)):
     require_approved(user)
     if rider_active_job(user["id"]):
         raise HTTPException(409, "Finish your current job first")
-    _, changed = db.execute(
+    changed = db.execute(
         "UPDATE orders SET rider_id = ?, status = 'accepted', accepted_at = ? WHERE id = ? AND status = 'requested'",
         (user["id"], now(), order_id),
     )
@@ -308,7 +311,7 @@ async def update_status(order_id: int, body: StatusIn, user=Depends(rider_user))
 @app.post("/api/orders/{order_id}/cancel")
 async def cancel_order(order_id: int, user=Depends(customer_user)):
     own_order(order_id, user)
-    _, changed = db.execute(
+    changed = db.execute(
         """UPDATE orders SET status = 'cancelled', cancelled_at = ?, cancelled_by = 'customer'
            WHERE id = ? AND status IN ('requested', 'accepted')""",
         (now(), order_id),

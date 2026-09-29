@@ -1,0 +1,18 @@
+# Render blueprint: https://render.com -> New -> Blueprint -> pick this repo.
+services:
+  - type: web
+    name: sendit
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips "*"
+    healthCheckPath: /api/config
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: DATABASE_URL
+        sync: false          # Render asks for it: paste the Supabase "Session pooler" connection string
+      - key: COURIER_SEED_DEMO
+        value: "1"
+      - key: COURIER_MMG_MODE
+        value: mock

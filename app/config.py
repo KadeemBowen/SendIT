@@ -2,8 +2,16 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(ROOT / ".env")  # secrets like DATABASE_URL live in .env (never committed)
+
 APP_NAME = os.environ.get("COURIER_APP_NAME", "SendIT")
-DB_PATH = Path(os.environ.get("COURIER_DB", Path(__file__).resolve().parent.parent / "data" / "courier.db"))
+
+# Database: Postgres/Supabase if DATABASE_URL is set, otherwise a local SQLite file.
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+DB_PATH = Path(os.environ.get("COURIER_DB", ROOT / "data" / "courier.db"))
 
 CURRENCY = "GYD"
 UTC_OFFSET_HOURS = -4             # Guyana time, used for "today" on the admin dashboard
@@ -40,6 +48,9 @@ MMG_API_BASE = os.environ.get("MMG_API_BASE", "")
 MMG_MERCHANT_ID = os.environ.get("MMG_MERCHANT_ID", "")
 MMG_API_KEY = os.environ.get("MMG_API_KEY", "")
 MMG_CALLBACK_SECRET = os.environ.get("MMG_CALLBACK_SECRET", "")
+
+# Load the demo accounts and a week of test orders on startup when the database has no users yet.
+SEED_DEMO_IF_EMPTY = os.environ.get("COURIER_SEED_DEMO", "0") == "1"
 
 # Shows demo login hints on the sign-in screen.
 DEMO_MODE = os.environ.get("COURIER_DEMO", "1") == "1"

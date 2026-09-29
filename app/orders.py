@@ -3,7 +3,7 @@ import json
 
 from fastapi import HTTPException
 
-from . import config, db, geo, payments
+from . import config, db, geo
 from .hub import hub
 
 ACTIVE_STATUSES = ("requested", "accepted", "picked_up")
@@ -26,37 +26,61 @@ def compute_eta(o, loc):
     return None
 
 
-def order_view(o, hide_customer_contact=False):
-    o = dict(o)
+# An order plus its customer, rider, rider location and latest payment, in one query.
+ORDER_SELECT = """
+    SELECT o.*,
+           c.name AS c_name, c.phone AS c_phone,
+           r.name AS r_name, r.phone AS r_phone, r.vehicle AS r_vehicle, r.plate AS r_plate,
+           l.lat AS l_lat, l.lng AS l_lng, l.updated_at AS l_updated_at,
+           p.id AS p_id, p.status AS p_status, p.message AS p_message, p.provider_ref AS p_provider_ref
+    FROM orders o
+    JOIN users c ON c.id = o.customer_id
+    LEFT JOIN users r ON r.id = o.rider_id
+    LEFT JOIN rider_locations l ON l.rider_id = o.rider_id
+    LEFT JOIN payments p ON p.id = (SELECT MAX(id) FROM payments WHERE order_id = o.id)
+"""
+JOINED_COLUMNS = (
+    "c_name", "c_phone", "r_name", "r_phone", "r_vehicle", "r_plate",
+    "l_lat", "l_lng", "l_updated_at", "p_id", "p_status", "p_message", "p_provider_ref",
+)
+
+
+def fetch_orders(where="1 = 1", args=(), tail="ORDER BY o.id DESC"):
+    """Orders (with ORDER_SELECT's joined columns) matching a WHERE clause on aliases o/c/r."""
+    return db.query(f"{ORDER_SELECT} WHERE {where} {tail}", args)
+
+
+def get_order(order_id):
+    rows = fetch_orders("o.id = ?", (order_id,), "")
+    if not rows:
+        raise HTTPException(404, "Order not found")
+    return rows[0]
+
+
+def order_view(row, hide_customer_contact=False):
+    o = {k: v for k, v in row.items() if k not in JOINED_COLUMNS}
     o["stops"] = json.loads(o.pop("stops_json"))
     o["tasks"] = json.loads(o.pop("tasks_json"))
     o["route"] = json.loads(o.pop("route_json"))
     o["breakdown"] = json.loads(o.pop("breakdown_json"))
 
-    customer = db.query_one("SELECT name, phone FROM users WHERE id = ?", (o["customer_id"],))
-    o["customer"] = {"name": customer["name"], "phone": None if hide_customer_contact else customer["phone"]}
+    o["customer"] = {"name": row["c_name"], "phone": None if hide_customer_contact else row["c_phone"]}
     if hide_customer_contact:
         o["mmg_number"] = None
 
-    payment = payments.latest_payment(o["id"]) if o["payment_method"] == "mmg" else None
-    o["payment"] = payment and {k: payment[k] for k in ("id", "status", "message", "provider_ref")}
+    o["payment"] = None
+    if o["payment_method"] == "mmg" and row["p_id"]:
+        o["payment"] = {"id": row["p_id"], "status": row["p_status"], "message": row["p_message"],
+                        "provider_ref": row["p_provider_ref"]}
 
     o["rider"] = o["rider_location"] = o["eta"] = None
     if o["rider_id"]:
-        o["rider"] = db.query_one("SELECT id, name, phone, vehicle, plate FROM users WHERE id = ?", (o["rider_id"],))
-        if o["status"] in ACTIVE_STATUSES:
-            o["rider_location"] = db.query_one(
-                "SELECT lat, lng, updated_at FROM rider_locations WHERE rider_id = ?", (o["rider_id"],)
-            )
+        o["rider"] = {"id": o["rider_id"], "name": row["r_name"], "phone": row["r_phone"],
+                      "vehicle": row["r_vehicle"], "plate": row["r_plate"]}
+        if o["status"] in ACTIVE_STATUSES and row["l_lat"] is not None:
+            o["rider_location"] = {"lat": row["l_lat"], "lng": row["l_lng"], "updated_at": row["l_updated_at"]}
             o["eta"] = compute_eta(o, o["rider_location"])
     return o
-
-
-def get_order(order_id):
-    row = db.query_one("SELECT * FROM orders WHERE id = ?", (order_id,))
-    if not row:
-        raise HTTPException(404, "Order not found")
-    return row
 
 
 def online_rider_ids():

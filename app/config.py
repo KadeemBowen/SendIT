@@ -1,0 +1,34 @@
+"""Business settings. Tweak these while testing - no other code changes needed."""
+import os
+from pathlib import Path
+
+APP_NAME = os.environ.get("COURIER_APP_NAME", "SendIT")
+DB_PATH = Path(os.environ.get("COURIER_DB", Path(__file__).resolve().parent.parent / "data" / "courier.db"))
+
+CURRENCY = "GYD"
+MAP_CENTER = (6.8013, -58.1551)  # Georgetown
+GEOCODE_COUNTRY = "gy"            # limit address search to Guyana ("" = worldwide)
+
+# Pricing: base + distance + extra stops + tasks, rounded up, never below the minimum.
+PRICING = {
+    "base_fee": 500,
+    "per_km": 150,
+    "per_extra_stop": 300,   # stops between pickup and drop-off
+    "per_task": 250,         # each thing the rider has to do (buy, collect, pay, wait...)
+    "minimum": 800,
+    "round_to": 100,
+}
+
+# Time estimates
+AVG_SPEED_KMH = 25        # city riding speed used for live ETAs
+ROAD_FACTOR = 1.3         # straight-line km -> road km when no routing service is available
+PICKUP_HANDLING_MIN = 5   # time spent at pickup
+TASK_MIN = 10             # extra time per task
+STOP_MIN = 5              # extra time per intermediate stop
+
+# Free public routing (OSRM) for road distance + route line. Falls back to estimates if it fails.
+USE_OSRM = os.environ.get("COURIER_USE_OSRM", "1") == "1"
+HTTP_USER_AGENT = os.environ.get("COURIER_USER_AGENT", f"{APP_NAME}-prototype/0.1")
+
+# Shows demo login hints on the sign-in screen.
+DEMO_MODE = os.environ.get("COURIER_DEMO", "1") == "1"

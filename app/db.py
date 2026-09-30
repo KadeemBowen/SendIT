@@ -4,6 +4,7 @@ Write SQL with `?` placeholders - they're converted for Postgres automatically.
 """
 import atexit
 import sqlite3
+import time
 from contextlib import contextmanager
 
 from .config import DATABASE_URL, DB_PATH
@@ -227,6 +228,18 @@ ALTER TABLE settings ENABLE ROW LEVEL SECURITY
 # ---------- connections ----------
 
 _pool = None
+_last_used = {}      # id(connection) -> time it was last returned to the pool
+IDLE_CHECK_SECONDS = 20
+
+
+def _check_if_idle(conn):
+    """Ping a pooled connection only if it has sat idle (hosted poolers drop idle connections).
+
+    Every network round trip to a hosted database costs real time, so busy connections skip the ping.
+    """
+    from psycopg_pool import ConnectionPool
+    if time.monotonic() - _last_used.get(id(conn), 0) > IDLE_CHECK_SECONDS:
+        ConnectionPool.check_connection(conn)
 
 
 def _pg_pool():
@@ -234,10 +247,11 @@ def _pg_pool():
     if _pool is None:
         from psycopg.rows import dict_row
         from psycopg_pool import ConnectionPool
+        # autocommit: a single statement is one round trip (no BEGIN/COMMIT); execute_all opens a transaction.
         # prepare_threshold=None: Supabase's transaction pooler doesn't support prepared statements.
         _pool = ConnectionPool(
-            DATABASE_URL, min_size=1, max_size=10, open=True, check=ConnectionPool.check_connection,
-            kwargs={"row_factory": dict_row, "prepare_threshold": None},
+            DATABASE_URL, min_size=1, max_size=10, open=True, check=_check_if_idle,
+            kwargs={"row_factory": dict_row, "prepare_threshold": None, "autocommit": True},
         )
         atexit.register(_pool.close)
     return _pool
@@ -249,10 +263,13 @@ def _sql(sql):
 
 @contextmanager
 def connection():
-    """A connection that commits when the block succeeds and rolls back if it raises."""
+    """A database connection. SQLite commits when the block succeeds; Postgres runs in autocommit."""
     if IS_POSTGRES:
         with _pg_pool().connection() as conn:
-            yield conn
+            try:
+                yield conn
+            finally:
+                _last_used[id(conn)] = time.monotonic()
         return
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
@@ -311,8 +328,13 @@ def insert(sql, args=()):
 def execute_all(statements):
     """Run several writes in one transaction: [(sql, args), ...]."""
     with connection() as conn:
+        if IS_POSTGRES:
+            with conn.transaction():
+                for sql, args in statements:
+                    conn.execute(_sql(sql), args)
+            return
         for sql, args in statements:
-            conn.execute(_sql(sql), args)
+            conn.execute(sql, args)
 
 
 def user_for_token(token):

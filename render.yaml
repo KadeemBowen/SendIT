@@ -4,6 +4,7 @@ services:
     name: sendit
     runtime: python
     plan: free
+    region: ohio             # same region as the Supabase database (us-east-2) keeps it fast
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips "*"
     healthCheckPath: /api/config

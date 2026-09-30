@@ -164,7 +164,7 @@ export function renderCustomer(root, user, sock, cfg) {
       points.push([place.lat, place.lng]);
     };
     if (s.quote && s.quote.route.length > 1) {
-      L.polyline(s.quote.route, { color: '#0f766e', weight: 5, opacity: 0.6 }).addTo(draftLayer);
+      L.polyline(s.quote.route, { color: '#045aa3', weight: 5, opacity: 0.6 }).addTo(draftLayer);
     }
     add(s.places.pickup, 'P', 'pickup', 'pickup');
     s.stops.forEach((p, i) => add(p, String(i + 1), 'stop', `stop-${i}`));
@@ -498,7 +498,10 @@ export function renderCustomer(root, user, sock, cfg) {
     if (act === 'cancel-no') { s.confirmCancel = null; renderActive(); return; }
     if (act === 'cancel-yes') {
       s.confirmCancel = null;
-      try { onOrder(await api(`/api/orders/${id}/cancel`, { method: 'POST' })); } catch (err) { toast(err.message, 'error'); renderActive(); }
+      try {
+        onOrder(await api(`/api/orders/${id}/cancel`, { method: 'POST' }));
+        toast('Delivery cancelled');
+      } catch (err) { toast(err.message, 'error'); renderActive(); }
       return;
     }
     if (act === 'sim-paid' || act === 'sim-failed') {
@@ -547,19 +550,7 @@ export function renderCustomer(root, user, sock, cfg) {
       s.history = [o, ...s.history.filter(h => h.id !== o.id)];
       renderHistory();
     }
-    if (prev && prev.payment_status !== o.payment_status) {
-      if (o.payment_status === 'paid' && o.payment_method === 'mmg') toast('MMG payment received - thank you', 'success');
-      if (o.payment_status === 'failed') toast('MMG payment failed - try again or pay cash', 'error');
-    }
-    if (prev && prev.status !== o.status) {
-      const messages = {
-        accepted: `${o.rider?.name || 'A rider'} accepted your delivery`,
-        picked_up: 'Your rider has picked up',
-        delivered: 'Delivered! Thanks for using us',
-        cancelled: 'Delivery cancelled',
-      };
-      if (messages[o.status]) toast(messages[o.status], o.status === 'cancelled' ? 'info' : 'success');
-    }
+    // Status and payment changes are announced by the notification bell, not here.
     if (!s.active.some(a => a.id === s.trackedId)) s.trackedId = s.active[0]?.id ?? null;
     renderActive();
     if (!s.active.length && form.hidden) showForm(true);

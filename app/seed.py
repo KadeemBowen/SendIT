@@ -65,7 +65,7 @@ def iso(dt):
 
 
 def reset():
-    db.execute_all([(f"DELETE FROM {t}", ()) for t in ("payments", "rider_locations", "orders", "sessions", "settings", "users")])
+    db.execute_all([(f"DELETE FROM {t}", ()) for t in ("notifications", "payments", "rider_locations", "orders", "sessions", "settings", "users")])
     print("deleted all data")
 
 

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from . import config, db, payments, pricing
 from .deps import admin_user, now, public_user
 from .hub import hub
+from .notify import notify, payment_changed
 from .orders import ACTIVE_STATUSES, fetch_orders, get_order, order_view, push_order, rider_active_job, withdraw
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(admin_user)])
@@ -126,7 +127,12 @@ async def cancel(order_id: int, body: CancelIn):
         raise HTTPException(409, "Only active orders can be cancelled")
     payments.on_cancel(get_order(order_id))
     await withdraw(order_id)
-    return await push_order(order_id)
+    view = await push_order(order_id)
+    why = f" Reason: {body.reason.strip()}" if body.reason and body.reason.strip() else ""
+    await notify([view["customer_id"]], "Order cancelled", f"{config.APP_NAME} cancelled your order #{order_id}.{why}", order_id)
+    await notify([view["rider_id"]], "Job cancelled", f"Order #{order_id} was cancelled by {config.APP_NAME}.{why}", order_id)
+    await payment_changed(view)
+    return view
 
 
 @router.post("/orders/{order_id}/assign")
@@ -143,7 +149,10 @@ async def assign(order_id: int, body: AssignIn):
     if not changed:
         raise HTTPException(409, "Only orders still waiting for a rider can be assigned")
     await withdraw(order_id)
-    return await push_order(order_id)
+    view = await push_order(order_id)
+    await notify([rider["id"]], "New job assigned", f"Order #{order_id}: {view['pickup_address']} to {view['dropoff_address']}.", order_id)
+    await notify([view["customer_id"]], "Rider on the way", f"{rider['name']} is handling your delivery #{order_id}.", order_id)
+    return view
 
 
 @router.post("/orders/{order_id}/mark-paid")
@@ -154,7 +163,9 @@ async def mark_paid(order_id: int):
     if row["status"] == "cancelled":
         raise HTTPException(409, "This order was cancelled")
     payments.mark_paid_manually(row, "Marked paid by admin")
-    return await push_order(order_id)
+    view = await push_order(order_id)
+    await notify([view["customer_id"]], "Payment received", f"Order #{order_id} is marked as paid.", order_id)
+    return view
 
 
 @router.post("/orders/{order_id}/mark-refunded")
@@ -163,7 +174,9 @@ async def mark_refunded(order_id: int):
     if row["payment_status"] != "refund_due":
         raise HTTPException(409, "No refund is due on this order")
     payments.mark_refunded(row)
-    return await push_order(order_id)
+    view = await push_order(order_id)
+    await notify([view["customer_id"]], "Refund sent", f"Your MMG payment for order #{order_id} has been refunded.", order_id)
+    return view
 
 
 @router.get("/riders/available")
@@ -225,7 +238,56 @@ async def update_user(user_id: int, body: UserUpdateIn):
     user = db.query_one("SELECT * FROM users WHERE id = ?", (user_id,))
     if body.approved is not None:
         await hub.send(user_id, {"type": "account", "user": public_user(user)})
+        if body.approved:
+            await notify([user_id], "You're approved!", "Go online to start receiving delivery requests.")
+        else:
+            await notify([user_id], "Approval withdrawn", f"Contact {config.APP_NAME} for details.")
     return public_user(user)
+
+
+def local_day_bounds(date_from, date_to):
+    """Turn local YYYY-MM-DD dates (inclusive) into UTC timestamp bounds."""
+    local = timezone(timedelta(hours=config.UTC_OFFSET_HOURS))
+    try:
+        start = datetime.strptime(date_from, "%Y-%m-%d").replace(tzinfo=local) if date_from else None
+        end = datetime.strptime(date_to, "%Y-%m-%d").replace(tzinfo=local) + timedelta(days=1) if date_to else None
+    except ValueError:
+        raise HTTPException(422, "Dates must look like 2026-09-30")
+    as_utc = lambda d: d.astimezone(timezone.utc).isoformat(timespec="seconds") if d else None
+    return as_utc(start), as_utc(end)
+
+
+@router.get("/riders/{rider_id}/orders")
+def rider_orders(rider_id: int, date_from: str = "", date_to: str = ""):
+    """A rider's jobs in a period (by booking date), with totals."""
+    rider = db.query_one(
+        """SELECT u.*, l.updated_at AS last_seen FROM users u LEFT JOIN rider_locations l ON l.rider_id = u.id
+           WHERE u.id = ? AND u.role = 'rider'""", (rider_id,))
+    if not rider:
+        raise HTTPException(404, "Rider not found")
+    start, end = local_day_bounds(date_from, date_to)
+    where, args = "o.rider_id = ?", [rider_id]
+    if start:
+        where += " AND o.created_at >= ?"
+        args.append(start)
+    if end:
+        where += " AND o.created_at < ?"
+        args.append(end)
+    orders = [order_view(r) for r in fetch_orders(where, args, "ORDER BY o.id DESC LIMIT 500")]
+    delivered = [o for o in orders if o["status"] == "delivered"]
+    cash = [o for o in delivered if o["payment_method"] == "cash"]
+    totals = {
+        "orders": len(orders),
+        "delivered": len(delivered),
+        "cancelled": sum(o["status"] == "cancelled" for o in orders),
+        "active": sum(o["status"] in ACTIVE_STATUSES for o in orders),
+        "earned": sum(o["price"] for o in delivered),
+        "cash_collected": sum(o["price"] for o in cash),
+        "mmg_paid": sum(o["price"] for o in delivered if o["payment_method"] == "mmg"),
+        "distance_km": round(sum(o["distance_km"] for o in delivered), 1),
+    }
+    return {"rider": public_user(rider) | {"last_seen": rider["last_seen"], "created_at": rider["created_at"]},
+            "orders": orders, "totals": totals, "currency": config.CURRENCY}
 
 
 # ---------- pricing ----------

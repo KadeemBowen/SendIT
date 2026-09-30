@@ -382,14 +382,22 @@ export function renderRider(root, user, sock, cfg) {
       Object.assign(user, msg.user);
       s.online = user.is_online;
       $('#online').checked = s.online;
-      if (user.approved && !wasApproved) toast('You\'re approved! Go online to start receiving jobs', 'success');
-      if (!user.approved && wasApproved) { toast('Your rider approval was withdrawn', 'error'); s.requests = []; renderRequests(); }
+      if (!user.approved && wasApproved) { s.requests = []; renderRequests(); }
       updateTracking();
     }
     if (msg.type === 'order_new' && s.online) {
       if (!s.requests.some(r => r.id === msg.order.id)) s.requests.unshift(msg.order);
-      if (!s.job) toast(`New request · ${money(msg.order.price, msg.order.currency)}`, 'success');
+      if (!s.job && user.notifications) {
+        toast(`New request · ${money(msg.order.price, msg.order.currency)}`, 'success');
+        if (navigator.vibrate) navigator.vibrate([80, 60, 80]);
+      }
       renderRequests();
+    }
+    // A job an admin assigned to this rider.
+    if (msg.type === 'order' && !s.job && msg.order.rider?.id === user.id && ['accepted', 'picked_up'].includes(msg.order.status)) {
+      s.requests = [];
+      setJob(msg.order);
+      return;
     }
     if (msg.type === 'order_gone') {
       s.requests = s.requests.filter(r => r.id !== msg.id);
@@ -397,7 +405,6 @@ export function renderRider(root, user, sock, cfg) {
     }
     if (msg.type === 'order' && s.job && msg.order.id === s.job.id) {
       if (msg.order.status === 'cancelled') {
-        toast('The customer cancelled this job', 'error');
         s.history = [msg.order, ...s.history];
         renderHistory();
         setJob(null);

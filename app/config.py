@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")  # secrets like DATABASE_URL live in .env (never committed)
 
-APP_NAME = os.environ.get("COURIER_APP_NAME", "SendIT")
+APP_NAME = os.environ.get("COURIER_APP_NAME", "SendIt")
 
 # Database: Postgres/Supabase if DATABASE_URL is set, otherwise a local SQLite file.
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
@@ -22,7 +22,7 @@ GEOCODE_COUNTRY = "gy"            # limit address search to Guyana ("" = worldwi
 # These are the defaults; admins can change them live on the dashboard (stored in the database).
 PRICING = {
     "base_fee": 500,
-    "per_km": 150,
+    "per_km": 80,
     "per_extra_stop": 300,   # stops between pickup and drop-off
     "per_task": 250,         # each thing the rider has to do (buy, collect, pay, wait...)
     "minimum": 800,

@@ -1,4 +1,4 @@
-# SendIT
+# SendIt
 
 Delivery and errand service, web-app prototype. Customers book a pickup and drop-off, add tasks for the rider, see a price up front, and pay in cash or with MMG. A rider accepts the job, and the customer then watches the rider on a live map with an ETA. Admins run everything from a dashboard.
 
@@ -62,9 +62,14 @@ A free Render service goes to sleep after 15 minutes without visitors, so the fi
 - **Admin** (dashboard):
   - **Overview:** today's numbers, a live map of riders and active orders, and alerts for riders to approve, refunds due and unconfirmed MMG payments.
   - **Orders:** filter and search; assign a rider by hand; cancel; mark paid; record refunds.
-  - **Riders and Customers:** approve riders; suspend or reactivate accounts.
+  - **Riders and Customers:** approve riders; suspend or reactivate accounts. Click a rider to see all their orders, filter by date period, and see totals (overall, cash collected, paid by MMG).
   - **Pricing:** edit rates live, with a preview of what a trip would cost.
   - **Payments:** every payment, refunds due, and MMG connection status.
+
+Everyone also gets:
+
+- **Notifications:** the bell in the top bar shows order, payment and account updates, live and saved in a list.
+- **Profile:** tap your name to choose the theme (System, Light or Dark), turn notifications off, or log out.
 
 To create a real admin account (or promote an existing one): `.\.venv\Scripts\python -m app.make_admin you@example.com "Your Name"`
 
@@ -89,18 +94,19 @@ To connect the real MMG API, all the work is in one place, `LiveMMG` in [`app/pa
 | `app/admin.py` | Admin dashboard API |
 | `app/orders.py` | Order data for the screens, ETAs, and pushing live updates to customers, riders and admins |
 | `app/payments.py` | Cash and MMG payments (mock and live providers) |
+| `app/notify.py` | In-app notifications: saved per user and pushed live |
 | `app/pricing.py` | Price = base fee + per km + per extra stop + per task, rounded up, with a minimum fare. Defaults are in `config.py`; admins can change them on the dashboard. |
 | `app/geo.py` | Road distance and route line from OSRM, address search from OpenStreetMap Nominatim. Falls back to straight-line estimates if those are down. |
 | `app/db.py` | SQLite or Postgres/Supabase; schema and migrations run automatically at startup |
 | `app/seed.py` | Demo accounts and test data |
-| `app/static/` | The web app (plain JS, no build step): `customer.js`, `rider.js`, `admin.js`, and shared `map.js` / `ui.js` / `api.js` |
+| `app/static/` | The web app (plain JS, no build step): `customer.js`, `rider.js`, `admin.js`, `notifications.js`, `profile.js`, and shared `map.js` / `ui.js` / `api.js` / `theme.js`. Colors come from the logo and are set at the top of `styles.css`. |
 | `render.yaml` | One-click hosting on Render |
 
 Order flow: `requested → accepted → picked_up → delivered`. Customers can cancel while `requested` or `accepted`; admins can cancel any active order. New requests go out live to every approved, online rider, and the first to accept gets the job.
 
 ## Not built yet
 
-- The live MMG connection (see above), ratings, and push notifications when the app is closed
+- The live MMG connection (see above), ratings, and push notifications when the app is closed (notifications currently appear while the app is open)
 - Rider documents and ID checks during approval, and rider payouts
 - Password reset and changing passwords
 - Production readiness: a paid or self-hosted map, routing and geocoding provider (the free public OSM services are for testing only), backups, and monitoring

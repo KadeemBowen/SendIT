@@ -38,7 +38,7 @@ export function renderAdmin(root, user, sock, cfg) {
   const viewEl = root.querySelector('#admin-view');
   let current = {};
 
-  const VIEWS = { overview: overviewView, orders: ordersView, riders: el => peopleView(el, 'rider'), customers: el => peopleView(el, 'customer'), pricing: pricingView, payments: paymentsView };
+  const VIEWS = { overview: overviewView, orders: ordersView, riders: (el, opts) => peopleView(el, 'rider', opts), customers: el => peopleView(el, 'customer'), pricing: pricingView, payments: paymentsView };
 
   function go(tab, opts = {}) {
     if (!VIEWS[tab]) tab = 'overview';
@@ -138,7 +138,7 @@ export function renderAdmin(root, user, sock, cfg) {
       const points = [];
       data.active_orders.forEach(o => {
         L.polyline(o.route.length > 1 ? o.route : [[o.pickup_lat, o.pickup_lng], [o.dropoff_lat, o.dropoff_lng]],
-          { color: '#0f766e', weight: 3, opacity: 0.6 }).addTo(layer);
+          { color: '#045aa3', weight: 3, opacity: 0.6 }).addTo(layer);
         L.marker([o.pickup_lat, o.pickup_lng], { icon: pin('P', 'pickup') }).bindTooltip(`#${o.id} pickup: ${o.pickup_address}`).addTo(layer);
         L.marker([o.dropoff_lat, o.dropoff_lng], { icon: pin('D', 'dropoff') }).bindTooltip(`#${o.id} drop-off: ${o.dropoff_address}`).addTo(layer);
         points.push([o.pickup_lat, o.pickup_lng], [o.dropoff_lat, o.dropoff_lng]);
@@ -364,22 +364,31 @@ export function renderAdmin(root, user, sock, cfg) {
 
   // ================= Riders & customers =================
 
-  function peopleView(el, role) {
+  function peopleView(el, role, opts = {}) {
     const isRider = role === 'rider';
     const st = { q: '', people: [], confirm: null };
     el.innerHTML = `
-      <div class="admin-head"><h2>${isRider ? 'Riders' : 'Customers'}</h2><span class="muted small" id="p-count"></span></div>
-      <div class="toolbar"><input id="p-search" type="search" placeholder="Search name, email, phone${isRider ? ', plate' : ''}"></div>
-      <div class="table-wrap">
-        <table class="data">
-          <thead><tr>
-            <th>Name</th><th>Phone</th>${isRider ? '<th>Vehicle</th>' : ''}<th>Status</th>
-            ${isRider ? '<th>Last seen</th><th class="num">Jobs</th><th class="num">Earned</th>' : '<th class="num">Orders</th><th class="num">Spent</th><th>Joined</th>'}
-            <th></th>
-          </tr></thead>
-          <tbody id="p-rows"></tbody>
-        </table>
-      </div>`;
+      <div id="p-list">
+        <div class="admin-head"><h2>${isRider ? 'Riders' : 'Customers'}</h2><span class="muted small" id="p-count"></span></div>
+        <div class="toolbar">
+          <input id="p-search" type="search" placeholder="Search name, email, phone${isRider ? ', plate' : ''}">
+          ${isRider ? '<span class="muted small">Click a rider to see their orders and totals</span>' : ''}
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr>
+              <th>Name</th><th>Phone</th>${isRider ? '<th>Vehicle</th>' : ''}<th>Status</th>
+              ${isRider ? '<th>Last seen</th><th class="num">Jobs</th><th class="num">Total</th>' : '<th>Joined</th><th class="num">Orders</th><th class="num">Spent</th>'}
+              <th></th>
+            </tr></thead>
+            <tbody id="p-rows"></tbody>
+            <tfoot id="p-foot"></tfoot>
+          </table>
+        </div>
+      </div>
+      <div id="p-detail" class="admin-view" hidden></div>`;
+    const listEl = el.querySelector('#p-list');
+    const detailEl = el.querySelector('#p-detail');
     const rowsEl = el.querySelector('#p-rows');
 
     function statusOf(p) {
@@ -401,21 +410,29 @@ export function renderAdmin(root, user, sock, cfg) {
     }
 
     function render() {
-      el.querySelector('#p-count').textContent = `${st.people.length} ${isRider ? 'rider' : 'customer'}${st.people.length === 1 ? '' : 's'}`;
-      rowsEl.innerHTML = st.people.length
+      const n = st.people.length;
+      el.querySelector('#p-count').textContent = `${n} ${isRider ? 'rider' : 'customer'}${n === 1 ? '' : 's'}`;
+      rowsEl.innerHTML = n
         ? st.people.map(p => `
-          <tr data-id="${p.id}">
+          <tr data-id="${p.id}" class="${isRider ? 'clickable' : ''}" ${isRider ? 'tabindex="0"' : ''}>
             <td><b>${esc(p.name)}</b><div class="muted small">${esc(p.email)}</div></td>
             <td class="nowrap">${telLink(p.phone)}</td>
             ${isRider ? `<td>${esc(p.vehicle || '')}<div class="muted small">${esc(p.plate || '')}</div></td>` : ''}
             <td>${statusOf(p)}</td>
             ${isRider
-              ? `<td class="nowrap small">${p.last_seen ? timeAgo(p.last_seen) : '<span class="muted">never</span>'}</td>
-                 <td class="num">${p.jobs}</td><td class="num">${money(p.total, cur)}</td>`
-              : `<td class="num">${p.jobs}</td><td class="num">${money(p.total, cur)}</td><td class="nowrap small">${fmtDate(p.created_at)}</td>`}
+              ? `<td class="nowrap small">${p.last_seen ? timeAgo(p.last_seen) : '<span class="muted">never</span>'}</td>`
+              : `<td class="nowrap small">${fmtDate(p.created_at)}</td>`}
+            <td class="num">${p.jobs}</td><td class="num">${money(p.total, cur)}</td>
             <td class="num">${actions(p)}</td>
           </tr>`).join('')
         : `<tr><td colspan="8" class="muted">No ${isRider ? 'riders' : 'customers'} found.</td></tr>`;
+      el.querySelector('#p-foot').innerHTML = n ? `
+        <tr>
+          <td colspan="${isRider ? 5 : 4}">Total · ${isRider ? 'delivered jobs, all time' : 'orders, all time'}</td>
+          <td class="num">${st.people.reduce((t, p) => t + p.jobs, 0)}</td>
+          <td class="num">${money(st.people.reduce((t, p) => t + p.total, 0), cur)}</td>
+          <td></td>
+        </tr>` : '';
     }
 
     async function load() {
@@ -424,9 +441,14 @@ export function renderAdmin(root, user, sock, cfg) {
     }
 
     rowsEl.addEventListener('click', async e => {
+      const row = e.target.closest('tr[data-id]');
+      if (!row) return;
+      const id = Number(row.dataset.id);
       const act = e.target.closest('[data-act]')?.dataset.act;
-      if (!act) return;
-      const id = Number(e.target.closest('tr').dataset.id);
+      if (!act) {
+        if (isRider && !e.target.closest('a, button')) openRider(id);
+        return;
+      }
       if (act === 'suspend') { st.confirm = id; render(); return; }
       if (act === 'suspend-no') { st.confirm = null; render(); return; }
       const body = { approve: { approved: true }, 'suspend-yes': { active: false }, reactivate: { active: true } }[act];
@@ -440,9 +462,138 @@ export function renderAdmin(root, user, sock, cfg) {
       } catch (err) { toast(err.message, 'error'); }
       render();
     });
+    rowsEl.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && e.target.matches('tr.clickable')) openRider(Number(e.target.dataset.id));
+    });
     el.querySelector('#p-search').addEventListener('input', debounce(e => { st.q = e.target.value; load(); }, 350));
+
+    // ----- one rider: orders and totals for a period -----
+
+    const PERIODS = [['today', 'Today'], ['7d', 'Last 7 days'], ['month', 'This month'], ['all', 'All time']];
+    const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+    function periodDates(period) {
+      const today = new Date();
+      if (period === 'today') return [ymd(today), ymd(today)];
+      if (period === '7d') return [ymd(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6)), ymd(today)];
+      if (period === 'month') return [ymd(new Date(today.getFullYear(), today.getMonth(), 1)), ymd(today)];
+      return ['', ''];
+    }
+
+    let detail = null;   // { id, period, from, to, data }
+
+    function openRider(id) {
+      const [from, to] = periodDates('7d');
+      detail = { id, period: '7d', from, to, data: null };
+      listEl.hidden = true;
+      detailEl.hidden = false;
+      detailEl.innerHTML = '<p class="muted">Loading…</p>';
+      loadRider();
+      window.scrollTo({ top: 0 });
+    }
+
+    function closeRider() {
+      detail = null;
+      detailEl.hidden = true;
+      detailEl.innerHTML = '';
+      listEl.hidden = false;
+      load();
+    }
+
+    async function loadRider() {
+      const d = detail;
+      try {
+        const data = await api(`/api/admin/riders/${d.id}/orders?date_from=${d.from}&date_to=${d.to}`);
+        if (detail !== d) return;
+        d.data = data;
+        renderRider();
+      } catch (err) { toast(err.message, 'error'); }
+    }
+
+    function kpi(label, value, sub = '') {
+      return `<div class="kpi"><div class="kpi-label">${label}</div><div class="kpi-value">${value}</div><div class="kpi-sub">${sub}</div></div>`;
+    }
+
+    function renderRider() {
+      const { rider, orders, totals } = detail.data;
+      const periodLabel = detail.from || detail.to
+        ? `${detail.from || 'the start'} to ${detail.to || 'today'}`
+        : 'all time';
+      detailEl.innerHTML = `
+        <div><button type="button" class="link-btn" data-act="back">← All riders</button></div>
+        <div class="admin-head">
+          <h2>${esc(rider.name)}</h2>
+          ${statusOf(rider)}
+        </div>
+        <p class="muted small" style="margin:0">${telLink(rider.phone)} · ${esc(rider.email)} · ${esc(rider.vehicle || 'No vehicle')}${rider.plate ? ` (${esc(rider.plate)})` : ''}
+          · joined ${fmtDate(rider.created_at)}${rider.last_seen ? ` · last seen ${timeAgo(rider.last_seen)}` : ''}</p>
+        <div class="toolbar">
+          <div class="chips">${PERIODS.map(([k, l]) => `<button type="button" class="chip ${detail.period === k ? 'active' : ''}" data-period="${k}">${l}</button>`).join('')}</div>
+          <div class="date-range">
+            <label>From<input type="date" id="rd-from" value="${detail.from}" max="${detail.to || ''}"></label>
+            <label>To<input type="date" id="rd-to" value="${detail.to}" min="${detail.from || ''}"></label>
+          </div>
+        </div>
+        <div class="kpis">
+          ${kpi('Total', money(totals.earned, cur), `${totals.delivered} delivered job${totals.delivered === 1 ? '' : 's'}`)}
+          ${kpi('Cash collected', money(totals.cash_collected, cur), 'held by the rider')}
+          ${kpi('Paid by MMG', money(totals.mmg_paid, cur), 'paid to the business')}
+          ${kpi('Distance', `${totals.distance_km.toLocaleString()} km`, 'on delivered jobs')}
+          ${kpi('Cancelled', totals.cancelled, totals.active ? `${totals.active} in progress` : 'in this period')}
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr><th>#</th><th>Booked</th><th>Customer</th><th>Route</th><th>Status</th><th>Payment</th><th class="num">Price</th></tr></thead>
+            <tbody>
+              ${orders.length ? orders.map(o => `
+                <tr class="clickable" data-order="${o.id}" tabindex="0">
+                  <td><b>#${o.id}</b></td>
+                  <td class="nowrap">${fmtDate(o.created_at)}</td>
+                  <td>${esc(o.customer.name)}</td>
+                  <td class="small">${esc(o.pickup_address)} → ${esc(o.dropoff_address)}</td>
+                  <td>${statusPill(o.status)}</td>
+                  <td>${paymentPill(o)}</td>
+                  <td class="num">${money(o.price, o.currency)}</td>
+                </tr>`).join('') : `<tr><td colspan="7" class="muted">No orders for ${esc(periodLabel)}.</td></tr>`}
+            </tbody>
+            ${orders.length ? `
+              <tfoot><tr>
+                <td colspan="6">Total · ${totals.delivered} delivered job${totals.delivered === 1 ? '' : 's'}, ${esc(periodLabel)}</td>
+                <td class="num">${money(totals.earned, cur)}</td>
+              </tr></tfoot>` : ''}
+          </table>
+        </div>
+        <p class="muted small" style="margin:0">Totals count delivered jobs only, by booking date. Cancelled and in-progress jobs are listed but not added.</p>`;
+    }
+
+    detailEl.addEventListener('click', e => {
+      if (e.target.closest('[data-act=back]')) return closeRider();
+      const chip = e.target.closest('[data-period]');
+      if (chip) {
+        detail.period = chip.dataset.period;
+        [detail.from, detail.to] = periodDates(detail.period);
+        return loadRider();
+      }
+      const row = e.target.closest('tr[data-order]');
+      if (row && !e.target.closest('a')) go('orders', { openId: Number(row.dataset.order) });
+    });
+    detailEl.addEventListener('change', e => {
+      if (e.target.id !== 'rd-from' && e.target.id !== 'rd-to') return;
+      detail.from = detailEl.querySelector('#rd-from').value;
+      detail.to = detailEl.querySelector('#rd-to').value;
+      detail.period = 'custom';
+      loadRider();
+    });
+    detailEl.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && e.target.matches('tr[data-order]')) e.target.click();
+    });
+
     load();
-    return { refresh: load };
+    if (isRider && opts.openId) openRider(opts.openId);
+    return {
+      refresh: () => (detail ? loadRider() : load()),
+      onOrder: debounce(o => { if (detail && o.rider?.id === detail.id) loadRider(); }, 600),
+    };
   }
 
   // ================= Pricing =================

@@ -40,7 +40,7 @@ export function drawOrder(map, group, order, { fitView = true, showRider = true 
     points.push([lat, lng]);
   };
   if (order.route && order.route.length > 1) {
-    L.polyline(order.route, { color: '#0f766e', weight: 5, opacity: 0.75 }).addTo(group);
+    L.polyline(order.route, { color: '#045aa3', weight: 5, opacity: 0.75 }).addTo(group);
   }
   add(order.pickup_lat, order.pickup_lng, 'P', 'pickup', `Pickup: ${order.pickup_address}`);
   order.stops.forEach((s, i) => add(s.lat, s.lng, String(i + 1), 'stop', `Stop ${i + 1}: ${s.address}`));

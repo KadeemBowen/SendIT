@@ -1,4 +1,5 @@
 import json
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -13,6 +14,7 @@ from . import admin, config, db, geo, payments, pricing
 from .auth import hash_password, new_token, verify_password
 from .deps import bearer_token, current_user, customer_user, now, public_user, rider_user
 from .hub import hub
+from .notify import list_for, mark_all_read, notify, notify_admins, payment_changed
 from .orders import announce_new, fetch_orders, get_order, order_view, push_order, rider_active_job, withdraw
 
 STATIC = Path(__file__).parent / "static"
@@ -20,6 +22,8 @@ STATIC = Path(__file__).parent / "static"
 
 @asynccontextmanager
 async def lifespan(_app):
+    # Say which database this server is using - easy to get wrong when .env points at the live one.
+    logging.getLogger("uvicorn.error").info("Database: %s", "Postgres (DATABASE_URL)" if db.IS_POSTGRES else f"SQLite {config.DB_PATH}")
     db.init()
     if config.SEED_DEMO_IF_EMPTY and not db.query_one("SELECT id FROM users LIMIT 1"):
         from .seed import load_demo
@@ -76,6 +80,11 @@ class PaymentMethodIn(BaseModel):
 
 class SimulateIn(BaseModel):
     outcome: Literal["paid", "failed"]
+
+
+class ProfileIn(BaseModel):
+    theme: Literal["system", "light", "dark"] | None = None
+    notifications: bool | None = None
 
 
 class StatusIn(BaseModel):
@@ -168,7 +177,7 @@ def get_config():
 
 
 @app.post("/api/auth/register")
-def register(body: RegisterIn):
+async def register(body: RegisterIn):
     email = body.email.strip().lower()
     if db.query_one("SELECT id FROM users WHERE email = ?", (email,)):
         raise HTTPException(409, "An account with this email already exists")
@@ -182,6 +191,8 @@ def register(body: RegisterIn):
          int(body.role != "rider"), now()),
     )
     user = db.query_one("SELECT * FROM users WHERE id = ?", (user_id,))
+    if body.role == "rider":
+        await notify_admins("New rider waiting for approval", f"{user['name']} - {user['vehicle']}")
     return {"token": start_session(user_id), "user": public_user(user)}
 
 
@@ -204,6 +215,26 @@ def logout(authorization: str | None = Header(default=None), user=Depends(curren
 @app.get("/api/me")
 def me(user=Depends(current_user)):
     return public_user(user)
+
+
+@app.patch("/api/me")
+def update_profile(body: ProfileIn, user=Depends(current_user)):
+    if body.theme is not None:
+        db.execute("UPDATE users SET theme = ? WHERE id = ?", (body.theme, user["id"]))
+    if body.notifications is not None:
+        db.execute("UPDATE users SET notify_enabled = ? WHERE id = ?", (int(body.notifications), user["id"]))
+    return public_user(db.query_one("SELECT * FROM users WHERE id = ?", (user["id"],)))
+
+
+@app.get("/api/notifications")
+def notifications(user=Depends(current_user)):
+    return list_for(user["id"])
+
+
+@app.post("/api/notifications/read")
+def read_notifications(user=Depends(current_user)):
+    mark_all_read(user["id"])
+    return {"ok": True}
 
 
 # ---------- routes: places & pricing ----------
@@ -253,7 +284,10 @@ async def create_order(body: OrderIn, user=Depends(customer_user)):
     if body.payment_method == "mmg":
         await run_in_threadpool(payments.start_mmg_payment, get_order(order_id))
     await announce_new(order_id)
-    return order_view(get_order(order_id))
+    view = order_view(get_order(order_id))
+    await notify_admins(f"New order #{order_id}",
+                        f"{view['pickup_address']} to {view['dropoff_address']} - {view['currency']} {view['price']:,.0f}", order_id)
+    return view
 
 
 @app.get("/api/orders")
@@ -291,7 +325,9 @@ async def accept_order(order_id: int, user=Depends(rider_user)):
     if not changed:
         raise HTTPException(409, "This request was already taken or cancelled")
     await withdraw(order_id, except_rider=user["id"])
-    return await push_order(order_id)
+    view = await push_order(order_id)
+    await notify([view["customer_id"]], "Rider on the way", f"{user['name']} accepted your delivery #{order_id}.", order_id)
+    return view
 
 
 @app.post("/api/orders/{order_id}/status")
@@ -305,7 +341,12 @@ async def update_status(order_id: int, body: StatusIn, user=Depends(rider_user))
     db.execute(f"UPDATE orders SET status = ?, {body.status}_at = ? WHERE id = ?", (body.status, now(), order_id))
     if body.status == "delivered" and row["payment_method"] == "cash":
         payments.record_cash(row)
-    return await push_order(order_id)
+    view = await push_order(order_id)
+    if body.status == "picked_up":
+        await notify([row["customer_id"]], "Picked up", f"{user['name']} has picked up order #{order_id}.", order_id)
+    else:
+        await notify([row["customer_id"]], "Delivered", f"Order #{order_id} has been delivered. Thank you!", order_id)
+    return view
 
 
 @app.post("/api/orders/{order_id}/cancel")
@@ -320,7 +361,10 @@ async def cancel_order(order_id: int, user=Depends(customer_user)):
         raise HTTPException(409, "This delivery can no longer be cancelled")
     payments.on_cancel(get_order(order_id))
     await withdraw(order_id)
-    return await push_order(order_id)
+    view = await push_order(order_id)
+    await notify([view["rider_id"]], "Job cancelled", f"The customer cancelled order #{order_id}.", order_id)
+    await payment_changed(view)
+    return view
 
 
 # ---------- routes: payments ----------
@@ -357,7 +401,9 @@ async def simulate_payment(payment_id: int, body: SimulateIn, user=Depends(curre
     )
     if not order_id:
         raise HTTPException(409, "This payment is no longer pending")
-    return await push_order(order_id)
+    view = await push_order(order_id)
+    await payment_changed(view)
+    return view
 
 
 @app.post("/api/payments/mmg/callback")
@@ -372,7 +418,7 @@ async def mmg_callback(request: Request):
         raise HTTPException(404, "Unknown payment")
     order_id = payments.apply_result(payment["id"], status, raw)
     if order_id:
-        await push_order(order_id)
+        await payment_changed(await push_order(order_id))
     return {"ok": True}
 
 

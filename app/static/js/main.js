@@ -3,15 +3,18 @@ import { esc, toast } from './ui.js';
 import { renderCustomer } from './customer.js';
 import { renderRider } from './rider.js';
 import { renderAdmin } from './admin.js';
+import { initNotifications } from './notifications.js';
+import { openProfile } from './profile.js';
+import { applyTheme } from './theme.js';
 
 const app = document.getElementById('app');
 const whoami = document.getElementById('whoami');
+const overlays = document.getElementById('overlays');
 let cfg;
 
 async function boot() {
   cfg = await api('/api/config');
   document.title = cfg.app_name;
-  document.getElementById('brand').textContent = cfg.app_name;
   if (auth.token) {
     try {
       return start(await api('/api/me'));
@@ -24,16 +27,25 @@ async function boot() {
 
 function start(user) {
   const sock = openSocket();
-  whoami.innerHTML = `
-    <span class="who-name">${esc(user.name)}</span>
-    <span class="role-badge">${{ rider: 'Rider', admin: 'Admin' }[user.role] || 'Customer'}</span>
-    <button class="link-btn" id="logout">Log out</button>`;
-  document.getElementById('logout').onclick = async () => {
+  applyTheme(user.theme);
+  whoami.innerHTML = '';
+  const bell = initNotifications(whoami, overlays, sock, user);
+
+  const profileBtn = document.createElement('button');
+  profileBtn.type = 'button';
+  profileBtn.className = 'top-btn';
+  profileBtn.setAttribute('aria-label', 'Your profile');
+  profileBtn.innerHTML = `<span class="avatar-sm">${esc(user.name.charAt(0).toUpperCase())}</span><span class="who-name">${esc(user.name.split(' ')[0])}</span>`;
+  whoami.appendChild(profileBtn);
+
+  async function logout() {
     try { await api('/api/auth/logout', { method: 'POST' }); } catch { /* already logged out */ }
     sock.close();
     auth.clear();
     location.reload();
-  };
+  }
+  profileBtn.onclick = () => openProfile(overlays, user, { onChange: bell.refresh, onLogout: logout });
+
   if (user.role === 'admin') renderAdmin(app, user, sock, cfg);
   else if (user.role === 'rider') renderRider(app, user, sock, cfg);
   else renderCustomer(app, user, sock, cfg);
@@ -45,8 +57,8 @@ function renderAuth(mode) {
   app.innerHTML = `
     <div class="auth-wrap">
       <div class="card auth">
-        <h1>${esc(cfg.app_name)}</h1>
-        <p class="muted">Deliveries and errands, tracked live.</p>
+        <img class="auth-logo" src="/static/logo.png" alt="${esc(cfg.app_name)}">
+        <p class="muted center">Deliveries and errands, tracked live.</p>
         <div class="tabs" role="tablist">
           <button type="button" data-mode="login" class="${register ? '' : 'active'}">Log in</button>
           <button type="button" data-mode="register" class="${register ? 'active' : ''}">Create account</button>

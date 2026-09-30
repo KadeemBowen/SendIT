@@ -39,4 +39,6 @@ def public_user(u):
         "is_online": bool(u["is_online"]),
         "approved": bool(u["approved"]),
         "active": bool(u["active"]),
+        "theme": u["theme"],
+        "notifications": bool(u["notify_enabled"]),
     }
